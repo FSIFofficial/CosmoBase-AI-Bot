@@ -65,21 +65,29 @@ client.on("threadCreate", async (thread) => {
 
 /* ========= 人間返信タグ ========= */
 client.on("messageCreate", async (message) => {
-  try {
-    if (message.author.bot) return;
-    if (!message.channel.isThread()) return;
-    const thread = message.channel;
-    // AI返信済みなら人間タグつけない
-    if (!thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID))
-      return;
-    if (!thread.appliedTags.includes(process.env.HUMAN_REPLIED_TAG_ID)) {
-      await thread.setAppliedTags([
-        ...thread.appliedTags,
-        process.env.HUMAN_REPLIED_TAG_ID,
-      ]);
-    }
-  } catch (err) {
-    console.error("messageCreate error:", err);
+  if (message.author.bot) return;
+  if (!message.channel.isThread()) return;
+  const thread = message.channel;
+  /* ========= メンションされたら再回答 ========= */
+  if (message.mentions.has(client.user)) {
+    console.log("メンション検知");
+    const messages = await thread.messages.fetch({ limit: 100 });
+    const conversation = [...messages.values()]
+      .reverse()
+      .filter(m => !m.author.bot)
+      .map(m => `${m.author.username}: ${m.content}`)
+      .join("\n");
+    const aiReply = await generateAIReply(conversation);
+    if (!aiReply) return;
+    await thread.send(aiReply);
+    return;
+  }
+  /* ========= 人間返信タグ ========= */
+  if (!thread.appliedTags.includes(process.env.HUMAN_REPLIED_TAG_ID)) {
+    await thread.setAppliedTags([
+      ...thread.appliedTags,
+      process.env.HUMAN_REPLIED_TAG_ID
+    ]);
   }
 });
 
@@ -119,28 +127,31 @@ async function handleThread(thread) {
 }
 
 /* ========= AI生成 ========= */
-async function generateAIReply(question) {
+async function generateAIReply(text) {
   try {
     const res = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.4,
-      max_tokens: 300,
+      max_tokens: 400,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: question },
+        {
+          role: "user",
+          content: text
+        }
       ],
     });
     return res.choices[0].message.content;
   } catch (err) {
-    // quotaエラーなら無視
     if (err.code === "insufficient_quota") {
       console.log("Quota不足 → スキップ");
       return null;
     }
-    console.error("OpenAI error:", err);
+    console.error(err);
     return null;
   }
 }
 
 /* ========= ログイン ========= */
 client.login(process.env.DISCORD_TOKEN);
+
