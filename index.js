@@ -53,152 +53,94 @@ client.once("clientReady", async () => {
 });
 
 /* ========= 新規スレッド作成 ========= */
-
 client.on("threadCreate", async (thread) => {
-
   try {
-
     if (thread.parentId !== process.env.QUESTION_CHANNEL_ID) return;
-
     if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) return;
-
     await handleThread(thread);
-
   } catch (err) {
-
     console.error("threadCreate error:", err);
-
   }
-
 });
 
-
 /* ========= 人間返信タグ ========= */
-
 client.on("messageCreate", async (message) => {
-
   try {
-
     if (message.author.bot) return;
-
     if (!message.channel.isThread()) return;
-
     const thread = message.channel;
-
     // AI返信済みなら人間タグつけない
     if (!thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID))
       return;
-
     if (!thread.appliedTags.includes(process.env.HUMAN_REPLIED_TAG_ID)) {
-
       await thread.setAppliedTags([
         ...thread.appliedTags,
         process.env.HUMAN_REPLIED_TAG_ID,
       ]);
-
     }
-
   } catch (err) {
-
     console.error("messageCreate error:", err);
-
   }
-
 });
 
-
 /* ========= 起動時スキャン ========= */
-
 async function scanUnansweredThreads() {
-
   const channel = await client.channels.fetch(
     process.env.QUESTION_CHANNEL_ID
   );
-
   if (channel.type !== ChannelType.GuildForum) return;
-
   const threads = await channel.threads.fetchActive();
-
   for (const thread of threads.threads.values()) {
-
     if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID))
       continue;
-
     await handleThread(thread);
-
   }
-
 }
 
-
 /* ========= スレッド処理 ========= */
-
 async function handleThread(thread) {
-
   try {
-
     const messages = await thread.messages.fetch({ limit: 10 });
-
     const firstMessage = [...messages.values()]
       .reverse()
       .find((m) => !m.author.bot);
-
     if (!firstMessage) return;
-
     console.log("AI回答生成:", firstMessage.content);
-
     const aiReply = await generateAIReply(firstMessage.content);
-
+    if (!aiReply) return;
     await thread.send(aiReply);
-
     await thread.setAppliedTags([
       ...thread.appliedTags,
       process.env.AI_REPLIED_TAG_ID,
     ]);
-
   } catch (err) {
-
     console.error("handleThread error:", err);
-
   }
-
 }
 
-
 /* ========= AI生成 ========= */
-
 async function generateAIReply(question) {
-
   try {
-
     const res = await openai.chat.completions.create({
-
       model: "gpt-4o-mini",
-
       temperature: 0.4,
-
       max_tokens: 300,
-
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: question },
       ],
-
     });
-
     return res.choices[0].message.content;
-
   } catch (err) {
-
+    // quotaエラーなら無視
+    if (err.code === "insufficient_quota") {
+      console.log("Quota不足 → スキップ");
+      return null;
+    }
     console.error("OpenAI error:", err);
-
-    return "AI回答が現在利用できないみたい。少し時間をおいて試してみたいな。";
-
+    return null;
   }
-
 }
 
-
 /* ========= ログイン ========= */
-
 client.login(process.env.DISCORD_TOKEN);
