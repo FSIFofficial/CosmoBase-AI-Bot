@@ -1,17 +1,16 @@
-name: CosmoBase AI Bot
+name: CosmoBase AI BOT
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"  # 5分ごと起動
+    - cron: '*/5 * * * *'   # 5分ごと
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Node.js setup
         uses: actions/setup-node@v4
@@ -21,11 +20,11 @@ jobs:
       - name: Install packages
         run: npm install
 
-      - name: Run bot
+      - name: Run BOT
+        run: node index.js
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           QUESTION_CHANNEL_ID: ${{ secrets.QUESTION_CHANNEL_ID }}
           AI_REPLIED_TAG_ID: ${{ secrets.AI_REPLIED_TAG_ID }}
           HUMAN_REPLIED_TAG_ID: ${{ secrets.HUMAN_REPLIED_TAG_ID }}
-        run: node index.js
