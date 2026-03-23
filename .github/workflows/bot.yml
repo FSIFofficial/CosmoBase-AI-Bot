@@ -2,7 +2,7 @@ name: CosmoBase AI BOT
 
 on:
   schedule:
-    - cron: '0 12,21 * * *'
+    - cron: '0 3,12 * * *'
   workflow_dispatch:
 
 jobs:
