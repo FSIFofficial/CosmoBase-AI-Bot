@@ -31,3 +31,4 @@ jobs:
           QUESTION_CHANNEL_ID: ${{ secrets.QUESTION_CHANNEL_ID }}
           AI_REPLIED_TAG_ID: ${{ secrets.AI_REPLIED_TAG_ID }}
           HUMAN_REPLIED_TAG_ID: ${{ secrets.HUMAN_REPLIED_TAG_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
