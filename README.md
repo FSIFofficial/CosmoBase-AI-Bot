@@ -46,7 +46,7 @@ Cosmo Baseは
 
 * Node.js
 * discord.js
-* Google Gemini API（gemini-1.5-flash）
+* Google Gemini API（gemini-2.5-flash）
 * GitHub Actions（定期実行）
 
 ---
