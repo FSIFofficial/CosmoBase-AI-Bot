@@ -27,7 +27,7 @@ Cosmo Baseは
 * 質問チャンネル（テキストチャンネル）の投稿に自動でAIが返信
 * メンションで再回答
 * 回答失敗時は内部で最大3回までリトライ
-* 起動時に未回答の質問を探して回答
+* 未回答の質問を起動時と10分ごとに探して回答（時間外の質問も受付時間になったら回答）
 * 投稿時間制限（深夜投稿防止）
 
 ---
@@ -46,7 +46,7 @@ Cosmo Baseは
 
 * Node.js
 * discord.js
-* Google Gemini API（gemini-2.5-flash）
+* Google Gemini API（gemini-3.8-flash）
 * GitHub Actions（定期実行）
 
 ---
@@ -77,6 +77,10 @@ npm install
 * DISCORD_TOKEN
 * GEMINI_API_KEY
 * QUESTION_CHANNEL_ID（質問用テキストチャンネルのID）
+
+任意（Variables）：
+
+* GEMINI_MODEL（使うGeminiモデル。未設定なら gemini-3.8-flash）
 
 ---
 
