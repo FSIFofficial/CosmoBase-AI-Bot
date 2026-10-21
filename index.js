@@ -190,3 +190,14 @@ async function generateAIReply(text) {
 
 /* ========= ログイン ========= */
 client.login(process.env.DISCORD_TOKEN);
+
+/* ========= 自動終了（GitHub Actions用） ========= */
+// RUN_MINUTES が設定されていれば、その分数で正常終了する（未設定なら常駐）
+const runMinutes = Number(process.env.RUN_MINUTES);
+if (runMinutes > 0) {
+  setTimeout(async () => {
+    console.log(`⏹ ${runMinutes}分経過したので終了します`);
+    await client.destroy();
+    process.exit(0);
+  }, runMinutes * 60 * 1000);
+}
