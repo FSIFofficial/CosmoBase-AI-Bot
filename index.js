@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, ChannelType } from "discord.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 
 const client = new Client({
   intents: [
@@ -10,8 +10,8 @@ const client = new Client({
   ],
 });
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 /* ========= 投稿時間制限（日本時間） ========= */
 function isAllowedTime() {
@@ -218,14 +218,13 @@ async function generateWithRetry(text) {
 
 async function generateAIReply(text) {
   try {
-    const model = genAI.getGenerativeModel({
+    const result = await ai.models.generateContent({
       model: GEMINI_MODEL,
-      systemInstruction: SYSTEM_PROMPT,
+      contents: text,
+      config: { systemInstruction: SYSTEM_PROMPT },
     });
 
-    const result = await model.generateContent(text);
-
-    return result.response.text();
+    return result.text || null;
   } catch (err) {
     console.error("Geminiエラー詳細:", err);
     return null;

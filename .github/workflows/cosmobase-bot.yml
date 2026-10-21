@@ -29,7 +29,6 @@ jobs:
           TZ: Asia/Tokyo
           RUN_MINUTES: 8
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           QUESTION_CHANNEL_ID: ${{ secrets.QUESTION_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}

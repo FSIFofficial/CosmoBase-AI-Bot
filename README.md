@@ -46,7 +46,7 @@ Cosmo Baseは
 
 * Node.js
 * discord.js
-* Google Gemini API（gemini-2.5-flash）
+* Google Gemini API（gemini-3.8-flash）
 * GitHub Actions（定期実行）
 
 ---
@@ -80,7 +80,7 @@ npm install
 
 任意（Variables）：
 
-* GEMINI_MODEL（使うGeminiモデル。未設定なら gemini-2.5-flash）
+* GEMINI_MODEL（使うGeminiモデル。未設定なら gemini-3.8-flash）
 
 ---
 
