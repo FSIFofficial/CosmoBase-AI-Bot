@@ -11,14 +11,21 @@ const client = new Client({
 });
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-/* ========= 投稿時間制限 ========= */
+/* ========= 投稿時間制限（日本時間） ========= */
 function isAllowedTime() {
-  const now = new Date();
-  const day = now.getDay();
-  const hour = now.getHours();
+  // 動かすサーバーのタイムゾーンに関係なく日本時間で判定する
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tokyo",
+    weekday: "short",
+    hour: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const weekday = parts.find(p => p.type === "weekday").value;
+  const hour = Number(parts.find(p => p.type === "hour").value);
 
-  if (day === 0 || day === 6) {
+  if (weekday === "Sat" || weekday === "Sun") {
     return hour >= 12 && hour < 22;
   }
   return hour >= 7 && hour < 22;
@@ -31,7 +38,6 @@ const SYSTEM_PROMPT = `
 「宇宙に少し詳しい、優しいお兄さん」のような存在として振る舞ってください。
 
 回答ルール：
-・最初の質問に対して1回だけ返信する
 ・断定しすぎず、現実的な距離感を大切にする
 ・専門用語は極力使わず、使う場合は一言で補足する
 ・未来を過度に煽らない
@@ -39,12 +45,19 @@ const SYSTEM_PROMPT = `
 ・質問者を否定しない
 ・回答は3〜6文程度に収める
 ・可能であれば「身近な例」や「生活とのつながり」を1つ入れる
+・宇宙と関係ない話題や雑談には、短く自然に返し、無理に宇宙の話につなげない
 
 文体・トーン：
 ・落ち着いていて、少しワクワクを残す
 ・「教える」ではなく「一緒に考える」姿勢
 ・上から目線にならない
 ・言い切らず、「〜と言われていることも多いです」など余白を残す
+・「です・ます」を基本に、ときどき「〜だね」「〜かな」くらいのやわらかさを混ぜる
+・「こんにちは」「ようこそ」などのあいさつや、自己紹介から始めない
+・いきなり本題から入る
+・「！」は使っても1回まで。テンションを上げすぎない
+・「素晴らしい質問ですね」のような質問をほめる前置きはしない
+・絵文字や顔文字は使わない
 
 回答の締め：
 ・最後は必ず、
@@ -56,14 +69,21 @@ const SYSTEM_PROMPT = `
 `;
 
 /* ========= 設定 ========= */
-const SCAN_LIMIT = 50; // 起動時に確認する直近メッセージ数
+const SCAN_LIMIT = 50; // 未回答チェックで確認する直近メッセージ数
 const SCAN_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // これより古い質問には答えない
+const SCAN_INTERVAL_MS = 10 * 60 * 1000; // 未回答チェックの間隔
 const MAX_RETRY = 3;
+
+const answering = new Set(); // 回答中のメッセージID（二重回答防止）
+let scanning = false;
 
 /* ========= 起動 ========= */
 client.once("clientReady", async () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
+  console.log(`🤖 Logged in as ${client.user.tag} (model: ${GEMINI_MODEL})`);
   await scanUnansweredMessages();
+
+  // 時間外に来た質問にも、受付時間になったら答える
+  setInterval(scanUnansweredMessages, SCAN_INTERVAL_MS);
 });
 
 /* ========= メッセージ ========= */
@@ -76,26 +96,19 @@ client.on("messageCreate", async (message) => {
     : message.channelId;
   if (channelId !== process.env.QUESTION_CHANNEL_ID) return;
 
-  /* ===== メンション対応 ===== */
-  if (message.mentions.has(client.user)) {
-    const messages = await message.channel.messages.fetch({ limit: 20 });
+  try {
+    /* ===== メンション対応 ===== */
+    if (message.mentions.has(client.user)) {
+      await answerMention(message);
+      return;
+    }
 
-    const text = [...messages.values()]
-      .reverse()
-      .filter(m => !m.author.bot)
-      .map(m => `${m.author.username}: ${m.content}`)
-      .join("\n");
-
-    const reply = await generateAIReply(text);
-    if (!reply) return;
-
-    await message.reply("呼んでくれてありがとう。\n\n" + reply);
-    return;
-  }
-
-  /* ===== 新しい質問（返信ではない投稿）に回答 ===== */
-  if (isQuestion(message)) {
-    await answerQuestion(message);
+    /* ===== 新しい質問（返信ではない投稿）に回答 ===== */
+    if (isQuestion(message)) {
+      await answerQuestion(message);
+    }
+  } catch (err) {
+    console.error("返信エラー:", err);
   }
 });
 
@@ -108,61 +121,109 @@ function isQuestion(message) {
   return message.content.trim().length > 0;
 }
 
-/* ========= 起動時スキャン ========= */
+/* ========= 未回答チェック ========= */
 async function scanUnansweredMessages() {
-  if (!isAllowedTime()) return;
+  if (!isAllowedTime() || scanning) return;
+  scanning = true;
 
-  const channel = await client.channels.fetch(
-    process.env.QUESTION_CHANNEL_ID
-  );
+  try {
+    const channel = await client.channels.fetch(
+      process.env.QUESTION_CHANNEL_ID
+    );
 
-  if (channel.type !== ChannelType.GuildText) {
-    console.log("QUESTION_CHANNEL_ID がテキストチャンネルではありません");
-    return;
-  }
+    if (channel.type !== ChannelType.GuildText) {
+      console.log("QUESTION_CHANNEL_ID がテキストチャンネルではありません");
+      return;
+    }
 
-  const messages = await channel.messages.fetch({ limit: SCAN_LIMIT });
+    const messages = await channel.messages.fetch({ limit: SCAN_LIMIT });
 
-  // Botが既に返信した質問のID
-  const answeredIds = new Set(
-    [...messages.values()]
-      .filter(m => m.author.id === client.user.id && m.reference?.messageId)
-      .map(m => m.reference.messageId)
-  );
+    // Botが既に返信した質問のID
+    const answeredIds = new Set(
+      [...messages.values()]
+        .filter(m => m.author.id === client.user.id && m.reference?.messageId)
+        .map(m => m.reference.messageId)
+    );
 
-  const unanswered = [...messages.values()]
-    .reverse()
-    .filter(m => isQuestion(m))
-    .filter(m => !answeredIds.has(m.id))
-    .filter(m => Date.now() - m.createdTimestamp < SCAN_MAX_AGE_MS);
+    const unanswered = [...messages.values()]
+      .reverse()
+      .filter(m => isQuestion(m))
+      .filter(m => !answeredIds.has(m.id))
+      .filter(m => Date.now() - m.createdTimestamp < SCAN_MAX_AGE_MS);
 
-  for (const message of unanswered) {
-    await answerQuestion(message);
+    for (const message of unanswered) {
+      await answerQuestion(message);
+    }
+  } catch (err) {
+    console.error("未回答チェックエラー:", err);
+  } finally {
+    scanning = false;
   }
 }
 
 /* ========= 質問への回答 ========= */
 async function answerQuestion(message) {
-  for (let i = 1; i <= MAX_RETRY; i++) {
-    const reply = await generateAIReply(message.content);
-    if (reply) {
-      await message.reply(reply);
-      return;
-    }
-    console.log(`FAIL ${i}回: ${message.id}`);
+  if (answering.has(message.id)) return;
+  answering.add(message.id);
+
+  try {
+    const reply = await generateWithRetry(message.content);
+    if (reply) await message.reply(reply);
+  } finally {
+    answering.delete(message.id);
   }
 }
 
+/* ========= メンションへの回答 ========= */
+async function answerMention(message) {
+  const messages = await message.channel.messages.fetch({ limit: 20 });
+
+  const history = [...messages.values()]
+    .reverse()
+    .filter(m => m.id !== message.id)
+    .map(m => {
+      const name = m.author.id === client.user.id ? "あなた" : m.author.username;
+      return `${name}: ${cleanMention(m.content)}`;
+    })
+    .join("\n");
+
+  const prompt = `
+以下はチャンネルの最近の会話です。
+${history}
+
+今、${message.author.username} さんがあなたを呼んで、こう書きました。
+「${cleanMention(message.content)}」
+
+会話の流れをふまえて、この呼びかけに返事をしてください。
+`;
+
+  const reply = await generateWithRetry(prompt);
+  if (reply) await message.reply(reply);
+}
+
+// メッセージ中のメンション表記（<@123...>）を取り除く
+function cleanMention(text) {
+  return text.replace(/<@!?\d+>/g, "").trim();
+}
+
 /* ========= AI生成 ========= */
+async function generateWithRetry(text) {
+  for (let i = 1; i <= MAX_RETRY; i++) {
+    const reply = await generateAIReply(text);
+    if (reply) return reply;
+    console.log(`FAIL ${i}回`);
+  }
+  return null;
+}
+
 async function generateAIReply(text) {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-flash",
+      model: GEMINI_MODEL,
+      systemInstruction: SYSTEM_PROMPT,
     });
 
-    const result = await model.generateContent(
-      SYSTEM_PROMPT + "\n\n" + text
-    );
+    const result = await model.generateContent(text);
 
     return result.response.text();
   } catch (err) {
