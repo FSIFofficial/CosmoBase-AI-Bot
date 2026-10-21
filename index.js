@@ -12,9 +12,6 @@ const client = new Client({
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-/* ========= fail管理（内部） ========= */
-const failMap = new Map();
-
 /* ========= 投稿時間制限 ========= */
 function isAllowedTime() {
   const now = new Date();
@@ -58,33 +55,30 @@ const SYSTEM_PROMPT = `
 ・「聞いてみてください」「質問してみてください」は使わない
 `;
 
+/* ========= 設定 ========= */
+const SCAN_LIMIT = 50; // 起動時に確認する直近メッセージ数
+const SCAN_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // これより古い質問には答えない
+const MAX_RETRY = 3;
+
 /* ========= 起動 ========= */
 client.once("clientReady", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
-  await scanUnansweredThreads();
-});
-
-/* ========= スレッド作成 ========= */
-client.on("threadCreate", async (thread) => {
-  if (!isAllowedTime()) return;
-  if (thread.parentId !== process.env.QUESTION_CHANNEL_ID) return;
-  if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) return;
-
-  await handleThread(thread);
+  await scanUnansweredMessages();
 });
 
 /* ========= メッセージ ========= */
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-  if (!message.channel.isThread()) return;
+  if (!isAllowedTime()) return;
 
-  const thread = message.channel;
+  const channelId = message.channel.isThread()
+    ? message.channel.parentId
+    : message.channelId;
+  if (channelId !== process.env.QUESTION_CHANNEL_ID) return;
 
   /* ===== メンション対応 ===== */
   if (message.mentions.has(client.user)) {
-    if (!isAllowedTime()) return;
-
-    const messages = await thread.messages.fetch({ limit: 50 });
+    const messages = await message.channel.messages.fetch({ limit: 20 });
 
     const text = [...messages.values()]
       .reverse()
@@ -95,79 +89,68 @@ client.on("messageCreate", async (message) => {
     const reply = await generateAIReply(text);
     if (!reply) return;
 
-    await thread.send("呼んでくれてありがとう。\n\n" + reply);
-
-    // 成功したらfailリセット
-    failMap.delete(thread.id);
-
+    await message.reply("呼んでくれてありがとう。\n\n" + reply);
     return;
   }
 
-  /* ===== 人間が回答したらタグ付与 ===== */
-  if (!thread.appliedTags.includes(process.env.HUMAN_REPLIED_TAG_ID)) {
-    await thread.setAppliedTags([
-      ...thread.appliedTags,
-      process.env.HUMAN_REPLIED_TAG_ID,
-    ]);
+  /* ===== 新しい質問（返信ではない投稿）に回答 ===== */
+  if (isQuestion(message)) {
+    await answerQuestion(message);
   }
 });
 
+/* ========= 質問判定 ========= */
+// 質問チャンネル直下の、誰かへの返信ではない投稿を質問とみなす
+function isQuestion(message) {
+  if (message.author.bot) return false;
+  if (message.channel.isThread()) return false;
+  if (message.reference) return false;
+  return message.content.trim().length > 0;
+}
+
 /* ========= 起動時スキャン ========= */
-async function scanUnansweredThreads() {
+async function scanUnansweredMessages() {
   if (!isAllowedTime()) return;
 
   const channel = await client.channels.fetch(
     process.env.QUESTION_CHANNEL_ID
   );
 
-  if (channel.type !== ChannelType.GuildForum) return;
-
-  const threads = await channel.threads.fetchActive();
-
-  for (const thread of threads.threads.values()) {
-    if (thread.appliedTags.includes(process.env.AI_REPLIED_TAG_ID)) continue;
-    await handleThread(thread);
-  }
-}
-
-/* ========= スレッド処理 ========= */
-async function handleThread(thread) {
-  let failCount = failMap.get(thread.id) || 0;
-
-  if (failCount >= 3) return;
-
-  const messages = await thread.messages.fetch({ limit: 10 });
-
-  const firstMessage = [...messages.values()]
-    .reverse()
-    .find(m => !m.author.bot);
-
-  if (!firstMessage) return;
-
-  const reply = await generateAIReply(firstMessage.content);
-
-  if (reply) {
-    await thread.send(reply);
-
-    /* ===== タグ整理（重要） ===== */
-    await thread.setAppliedTags([
-      ...thread.appliedTags.filter(
-        id => id !== process.env.HUMAN_REPLIED_TAG_ID
-      ),
-      process.env.AI_REPLIED_TAG_ID,
-    ]);
-
-    // 成功 → failリセット
-    failMap.delete(thread.id);
-
+  if (channel.type !== ChannelType.GuildText) {
+    console.log("QUESTION_CHANNEL_ID がテキストチャンネルではありません");
     return;
   }
 
-  // 失敗 → カウント
-  failCount++;
-  failMap.set(thread.id, failCount);
+  const messages = await channel.messages.fetch({ limit: SCAN_LIMIT });
 
-  console.log(`FAIL ${failCount}回: ${thread.name}`);
+  // Botが既に返信した質問のID
+  const answeredIds = new Set(
+    [...messages.values()]
+      .filter(m => m.author.id === client.user.id && m.reference?.messageId)
+      .map(m => m.reference.messageId)
+  );
+
+  const unanswered = [...messages.values()]
+    .reverse()
+    .filter(m => isQuestion(m))
+    .filter(m => !answeredIds.has(m.id))
+    .filter(m => Date.now() - m.createdTimestamp < SCAN_MAX_AGE_MS);
+
+  for (const message of unanswered) {
+    await answerQuestion(message);
+  }
+}
+
+/* ========= 質問への回答 ========= */
+async function answerQuestion(message) {
+  for (let i = 1; i <= MAX_RETRY; i++) {
+    const reply = await generateAIReply(message.content);
+    if (reply) {
+      await message.reply(reply);
+      return;
+    }
+    console.log(`FAIL ${i}回: ${message.id}`);
+  }
 }
 
 /* ========= AI生成 ========= */
@@ -190,3 +173,14 @@ async function generateAIReply(text) {
 
 /* ========= ログイン ========= */
 client.login(process.env.DISCORD_TOKEN);
+
+/* ========= 自動終了（GitHub Actions用） ========= */
+// RUN_MINUTES が設定されていれば、その分数で正常終了する（未設定なら常駐）
+const runMinutes = Number(process.env.RUN_MINUTES);
+if (runMinutes > 0) {
+  setTimeout(async () => {
+    console.log(`⏹ ${runMinutes}分経過したので終了します`);
+    await client.destroy();
+    process.exit(0);
+  }, runMinutes * 60 * 1000);
+}
